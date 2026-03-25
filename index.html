@@ -169,6 +169,7 @@
       let stream = null;
       let scanning = false;
       let rafId = null;
+      let redirecting = false;
 
       function setStatus(msg) {
         statusEl.textContent = msg;
@@ -224,9 +225,14 @@
             return (rafId = requestAnimationFrame(tick));
           }
 
+          // Prevent multiple redirects on the same frame.
+          redirecting = true;
           stopCamera();
           setStatus("QR detected. Redirecting...");
-          window.location.href = redirectUrl;
+          // Hide the scanning UI immediately before redirect.
+          document.getElementById("ui").style.display = "none";
+          document.getElementById("video").style.display = "none";
+          window.location.replace(redirectUrl);
           return;
         }
 
