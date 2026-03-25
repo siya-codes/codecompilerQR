@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>AR QR Scan</title>
+    <!-- jsQR for QR decoding from the browser camera -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <style>
+      :root {
+        --frame-size: 68vmin;
+      }
+
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        overflow: hidden;
+        font-family: Arial, Helvetica, sans-serif;
+      }
+
+      #video {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        z-index: 1;
+        background: #000;
+      }
+
+      #canvas {
+        display: none;
+      }
+
+      #ui {
+        position: fixed;
+        inset: 0;
+        z-index: 2;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        color: #d7ffe0;
+        pointer-events: none;
+      }
+
+      #title {
+        font-size: clamp(14px, 2.4vmin, 20px);
+        text-align: center;
+        margin-bottom: 14px;
+        text-shadow: 0 0 12px rgba(0, 255, 120, 0.25);
+      }
+
+      #scan-frame {
+        position: relative;
+        width: var(--frame-size);
+        height: var(--frame-size);
+        border-radius: 18px;
+        border: 2px solid rgba(0, 255, 120, 0.7);
+        box-shadow:
+          0 0 0 1px rgba(0, 255, 120, 0.15),
+          0 0 30px rgba(0, 255, 120, 0.12);
+        background:
+          linear-gradient(
+            180deg,
+            rgba(0, 255, 120, 0.08),
+            rgba(0, 255, 120, 0.02)
+          );
+        overflow: hidden;
+      }
+
+      #scan-line {
+        position: absolute;
+        left: 0;
+        width: 100%;
+        height: 6px;
+        background: rgba(0, 255, 120, 0.95);
+        box-shadow: 0 0 18px rgba(0, 255, 120, 0.6);
+        animation: scanline 1.6s linear infinite;
+      }
+
+      @keyframes scanline {
+        from {
+          transform: translateY(0);
+        }
+        to {
+          transform: translateY(calc(var(--frame-size) - 6px));
+        }
+      }
+
+      #corner-hint {
+        position: absolute;
+        inset: 10px;
+        border-radius: 12px;
+        border: 1px dashed rgba(0, 255, 120, 0.25);
+        pointer-events: none;
+      }
+
+      #controls {
+        pointer-events: auto;
+        margin-top: 18px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+
+      button {
+        cursor: pointer;
+        border: 1px solid rgba(0, 255, 120, 0.5);
+        background: rgba(0, 255, 120, 0.08);
+        color: #eafff0;
+        padding: 12px 16px;
+        border-radius: 12px;
+        font-size: 16px;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      #status {
+        margin-top: 14px;
+        font-size: 14px;
+        color: rgba(210, 255, 225, 0.85);
+        text-align: center;
+        max-width: 92vw;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <div id="ui">
+      <div id="title">Point your camera at the QR</div>
+      <div id="scan-frame" aria-hidden="true">
+        <div id="scan-line"></div>
+        <div id="corner-hint"></div>
+      </div>
+
+      <div id="controls">
+        <button id="startBtn">Start AR Scan</button>
+        <button id="stopBtn" class="hidden" disabled>Stopping...</button>
+      </div>
+
+      <div id="status"></div>
+    </div>
+
+    <script>
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const statusEl = document.getElementById("status");
+
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+      let stream = null;
+      let scanning = false;
+      let rafId = null;
+
+      function setStatus(msg) {
+        statusEl.textContent = msg;
+      }
+
+      function stopCamera() {
+        scanning = false;
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = null;
+        if (stream) {
+          stream.getTracks().forEach((t) => t.stop());
+        }
+        stream = null;
+      }
+
+      function getUrlFromQrText(qrText) {
+        if (!qrText) return null;
+        const text = String(qrText).trim();
+        // Only redirect for real URLs; otherwise keep scanning.
+        if (text.startsWith("http://") || text.startsWith("https://")) return text;
+        return null;
+      }
+
+      function tick() {
+        if (!scanning) return;
+        if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+
+        const vW = video.videoWidth;
+        const vH = video.videoHeight;
+        if (!vW || !vH) {
+          rafId = requestAnimationFrame(tick);
+          return;
+        }
+
+        // Downscale for speed.
+        const scale = 0.6;
+        const w = Math.floor(vW * scale);
+        const h = Math.floor(vH * scale);
+        canvas.width = w;
+        canvas.height = h;
+
+        ctx.drawImage(video, 0, 0, w, h);
+        const imageData = ctx.getImageData(0, 0, w, h);
+
+        const code = window.jsQR(imageData.data, w, h);
+        if (code && code.data) {
+          const redirectUrl = getUrlFromQrText(code.data);
+          if (!redirectUrl) {
+            setStatus("QR detected, but it doesn't contain a valid URL. Keep scanning...");
+            return (rafId = requestAnimationFrame(tick));
+          }
+
+          stopCamera();
+          setStatus("QR detected. Redirecting...");
+          window.location.href = redirectUrl;
+          return;
+        }
+
+        rafId = requestAnimationFrame(tick);
+      }
+
+      async function startCameraAndScan() {
+        if (scanning) return;
+        setStatus("Requesting camera permission...");
+        startBtn.disabled = true;
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "environment" },
+            audio: false,
+          });
+          video.srcObject = stream;
+          await video.play();
+
+          stopBtn.classList.remove("hidden");
+          stopBtn.disabled = false;
+
+          scanning = true;
+          setStatus("Scanning... (animation running)");
+          rafId = requestAnimationFrame(tick);
+        } catch (err) {
+          console.error(err);
+          startBtn.disabled = false;
+          setStatus("Camera blocked or not available. Please allow camera access.");
+        }
+      }
+
+      startBtn.addEventListener("click", startCameraAndScan);
+      stopBtn.addEventListener("click", () => {
+        stopBtn.disabled = true;
+        stopBtn.textContent = "Stopped";
+        stopCamera();
+        startBtn.disabled = false;
+        setStatus("Stopped.");
+      });
+
+      // Autostart is sometimes blocked by browsers.
+      setStatus("Tap 'Start AR Scan' to begin.");
+    </script>
+  </body>
+</html>
